@@ -43,14 +43,29 @@ func CatFileBatchCheckAllObjects(ctx context.Context, catFileCheckWriter *io.Pip
 
 	stderr := new(bytes.Buffer)
 	var errbuf strings.Builder
-	cmd := git.NewCommand(ctx, "cat-file", "--batch-check", "--batch-all-objects")
+
+	var cmd *git.Command
+	if git.DefaultFeatures().CheckVersionAtLeast("2.19.0") {
+		cmd = git.NewCommand(ctx, "cat-file", "--batch-check", "--batch-all-objects", "--buffer", "--unordered")
+	} else if git.DefaultFeatures().CheckVersionAtLeast("2.6.0") {
+		cmd = git.NewCommand(ctx, "cat-file", "--batch-check", "--batch-all-objects")
+	} else {
+		cmd = git.NewCommand(ctx, "version")
+		revListReader, revListWriter := io.Pipe()
+		shasToCheckReader, shasToCheckWriter := io.Pipe()
+		wg.Add(2)
+		go CatFileBatchCheck(ctx, shasToCheckReader, catFileCheckWriter, wg, tmpBasePath)
+		go BlobsFromRevListObjects(revListReader, shasToCheckWriter, wg)
+		go RevListAllObjects(ctx, revListWriter, wg, tmpBasePath, errChan)
+	}
+
 	if err := cmd.Run(&git.RunOpts{
 		Dir:    tmpBasePath,
 		Stdout: catFileCheckWriter,
 		Stderr: stderr,
 	}); err != nil {
-		log.Error("git cat-file --batch-check --batch-all-object [%s]: %v - %s", tmpBasePath, err, errbuf.String())
-		err = fmt.Errorf("git cat-file --batch-check --batch-all-object [%s]: %w - %s", tmpBasePath, err, errbuf.String())
+		log.Error("%s [%s]: %v - %s", cmd.String(), tmpBasePath, err, errbuf.String())
+		err = fmt.Errorf("%s [%s]: %w - %s", cmd.String(), tmpBasePath, err, errbuf.String())
 		_ = catFileCheckWriter.CloseWithError(err)
 		errChan <- err
 	}
